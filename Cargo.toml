@@ -1,0 +1,15 @@
+[package]
+name = "embedded-codec"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+embedded-io-async = { version = "0.6.1", default-features = false }
+futures-core = { version = "0.3.30", default-features = false }
+heapless = "0.8.0"
+
+[features]
+default = ["alloc"]
+alloc = ["embedded-io-async/alloc", "futures-core/alloc"]
+std = ["embedded-io-async/std", "futures-core/std"]
