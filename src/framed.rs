@@ -1,27 +1,30 @@
-use embedded_io_async::{Read, Write, ErrorType, ErrorKind};
+use core::mem::MaybeUninit;
 
-use crate::{Buffer, Decoder, Stream, Encoder, Sink};
+use bytes::{Buf, BufMut, BytesMut};
+use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 
-pub struct Framed<'a, RW, Codec, const N: usize> {
+use crate::{Decoder, Encoder, Sink, Stream};
+
+pub struct Framed<RW, Codec> {
     inner: RW,
     codec: Codec,
-    read_frame: ReadFrame<'a, N>,
-    write_frame: WriteFrame<'a, N>,
+    read_frame: ReadFrame,
+    write_frame: WriteFrame,
 }
 
-struct ReadFrame<'a, const N: usize> {
-    buffer: Buffer<'a, N>,
+struct ReadFrame {
+    buffer: BytesMut,
     eof: bool,
     is_readable: bool,
     has_errored: bool,
 }
 
-struct WriteFrame<'a, const N: usize> {
-    buffer: Buffer<'a, N>,
+struct WriteFrame {
+    buffer: BytesMut,
     backpressure_boundary: usize,
 }
 
-impl<RW, Codec, const N: usize> Stream for Framed<'_, RW, Codec, N>
+impl<RW, Codec> Stream for Framed<RW, Codec>
 where
     RW: Read + Write,
     Codec: Decoder,
@@ -125,11 +128,28 @@ where
                 return Some(Err(ErrorKind::OutOfMemory.into()));
             }
             let chunk = state.buffer.chunk_mut();
-            let bytect = match self.inner.read(chunk).await {
+
+            // ensure init, as `read` needs initialized memory
+            let init_chunk = unsafe {
+                // Safety: `chunk_mut()` returns a `&mut UninitSlice`, and `UninitSlice` is a
+                // transparent wrapper around `[MaybeUninit<u8>]`.
+                let dst = &mut *(chunk as *mut _ as *mut [MaybeUninit<u8>]);
+                for el in dst.iter_mut() {
+                    el.write(0u8);
+                }
+                // we just initialized, impl based on nightly `slice_assume_init_mut`
+                // SAFETY: similar to safety notes for `slice_get_ref`, but we have a
+                // mutable reference which is also guaranteed to be valid for writes.
+                &mut *(dst as *mut [MaybeUninit<u8>] as *mut [u8])
+            };
+            let bytect = match self.inner.read(init_chunk).await {
                 Ok(n) => {
-                    state.buffer.advance_mut(n);
+                    // Safety: we initalized the memory above
+                    unsafe {
+                        state.buffer.advance_mut(n);
+                    }
                     n
-                },
+                }
                 Err(err) => {
                     state.has_errored = true;
                     return Some(Err(err.into()));
@@ -156,7 +176,7 @@ where
     }
 }
 
-impl<RW, Codec, const N: usize> ErrorType for Framed<'_, RW, Codec, N>
+impl<RW, Codec> ErrorType for Framed<RW, Codec>
 where
     RW: Read + Write,
     Codec: ErrorType,
@@ -164,7 +184,7 @@ where
     type Error = Codec::Error;
 }
 
-impl<RW, Codec, I, const N: usize> Sink<I> for Framed<'_, RW, Codec, N>
+impl<RW, Codec, I> Sink<I> for Framed<RW, Codec>
 where
     RW: Read + Write,
     Codec: Encoder<I>,
@@ -172,12 +192,12 @@ where
 {
     async fn send(&mut self, item: I) -> Result<(), Self::Error> {
         self.codec.encode(item, &mut self.write_frame.buffer)?;
-        while self.write_frame.buffer.remaining() > 0 {
+        while !self.write_frame.buffer.is_empty() {
             let n = self.inner.write(self.write_frame.buffer.chunk()).await?;
             self.write_frame.buffer.advance(n);
         }
 
-        if self.write_frame.buffer.remaining() >= self.write_frame.backpressure_boundary  {
+        if self.write_frame.buffer.len() >= self.write_frame.backpressure_boundary {
             self.inner.flush().await?;
         }
 
@@ -186,7 +206,7 @@ where
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
         // write out any remaining data in the out_buffer
-        while self.write_frame.buffer.remaining() > 0 {
+        while !self.write_frame.buffer.is_empty() {
             let n = self.inner.write(self.write_frame.buffer.chunk()).await?;
             self.write_frame.buffer.advance(n);
         }

@@ -3,16 +3,17 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-mod stream;
-mod buffer;
-mod encoder;
 mod decoder;
-mod sink;
+mod encoder;
 mod framed;
+mod sink;
+mod stream;
 
-pub use self::stream::Stream;
-pub use self::sink::Sink;
-pub use self::encoder::Encoder;
+pub mod codecs;
+
+// pub use self::buffer::Buffer;
 pub use self::decoder::Decoder;
-pub use self::buffer::Buffer;
+pub use self::encoder::Encoder;
 pub use self::framed::Framed;
+pub use self::sink::Sink;
+pub use self::stream::Stream;

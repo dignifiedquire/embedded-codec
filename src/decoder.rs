@@ -1,17 +1,12 @@
+use bytes::BytesMut;
 use embedded_io_async::{Error, ErrorKind};
-
-use crate::buffer::Buffer;
 
 pub trait Decoder {
     type Error: Error + From<ErrorKind>;
     type Item;
 
     /// Returns a valid item if possible and how much of `src` was consumed.
-    fn decode<const N: usize>(
-        &mut self,
-        src: &mut Buffer<'_, N>,
-    ) -> Result<Option<Self::Item>, Self::Error>;
-
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error>;
 
     /// A default method available to be called when there are no more bytes
     /// available to be read from the underlying I/O.
@@ -31,7 +26,7 @@ pub trait Decoder {
     /// Once `None` has been returned, `decode_eof` won't be called again until
     /// an attempt to resume the stream has been made, where the underlying stream
     /// actually returned more data.
-    fn decode_eof<const N: usize>(&mut self, buf: &mut Buffer<'_, N>) -> Result<Option<Self::Item>, Self::Error> {
+    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         match self.decode(buf)? {
             Some(frame) => Ok(Some(frame)),
             None => {
