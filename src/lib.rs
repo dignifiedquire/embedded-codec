@@ -1,4 +1,5 @@
 #![allow(async_fn_in_trait)]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

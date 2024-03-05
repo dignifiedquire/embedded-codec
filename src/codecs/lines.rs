@@ -1,4 +1,5 @@
 use core::{cmp, fmt, str, usize};
+use alloc::string::{String, ToString};
 
 use bytes::{Buf, BufMut, BytesMut};
 use embedded_io_async::{Error, ErrorKind, ErrorType};

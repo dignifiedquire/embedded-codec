@@ -1,3 +1,5 @@
+use core::convert::From;
+
 use bytes::BytesMut;
 use embedded_io_async::{Error, ErrorKind};
 
