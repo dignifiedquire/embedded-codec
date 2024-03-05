@@ -1,15 +1,27 @@
 use core::mem::MaybeUninit;
+use core::marker::PhantomData;
 
 use bytes::{Buf, BufMut, BytesMut};
 use embedded_io_async::{ErrorKind, ErrorType, Read, Write};
 
 use crate::{Decoder, Encoder, Sink, Stream};
 
-pub struct Framed<RW, Codec> {
-    inner: RW,
+pub struct Framed<R, W, I, Codec> {
+    read: FramedRead<R, Codec>,
+    write: FramedWrite<W, I, Codec>,
+}
+
+pub struct FramedRead<R, Codec> {
+    inner: R,
     codec: Codec,
     read_frame: ReadFrame,
+}
+
+pub struct FramedWrite<W, I, Codec> {
+    inner: W,
+    codec: Codec,
     write_frame: WriteFrame,
+    _i: PhantomData<I>,
 }
 
 struct ReadFrame {
@@ -19,16 +31,87 @@ struct ReadFrame {
     has_errored: bool,
 }
 
+impl ReadFrame {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            buffer: BytesMut::with_capacity(cap),
+            eof: false,
+            is_readable: false,
+            has_errored: false,
+        }
+    }
+}
+
 struct WriteFrame {
     buffer: BytesMut,
     backpressure_boundary: usize,
 }
 
-impl<RW, Codec> Stream for Framed<RW, Codec>
+impl WriteFrame {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            buffer: BytesMut::with_capacity(cap),
+            backpressure_boundary: cap,
+        }
+    }
+}
+
+impl<R, W, I, Codec> Framed<R, W, I, Codec>
 where
-    RW: Read + Write,
+    R: Read,
+W: Write,
+    Codec: Decoder + Encoder<I> + Clone,
+    <Codec as Decoder>::Error: From<<R as ErrorType>::Error>,
+    <Codec as ErrorType>::Error: From<<W as ErrorType>::Error>,
+{
+    pub fn new(read: R, write: W, codec: Codec) -> Self {
+        Self {
+            read: FramedRead::new(read, codec.clone()),
+            write: FramedWrite::new(write, codec),
+        }
+    }
+
+    pub fn split(self) -> (FramedRead<R, Codec>, FramedWrite<W, I, Codec>) {
+        (self.read, self.write)
+    }
+}
+
+impl<R, Codec> FramedRead<R, Codec>
+where
+    R: Read,
     Codec: Decoder,
-    Codec::Error: From<<RW as ErrorType>::Error>,
+    <Codec as Decoder>::Error: From<<R as ErrorType>::Error>,
+{
+    pub fn new(inner: R, codec: Codec) -> Self {
+        Self {
+            inner,
+            codec,
+            read_frame: ReadFrame::with_capacity(512),
+        }
+    }
+}
+
+impl<W, I, Codec> FramedWrite<W, I, Codec>
+where
+    W: Write,
+    Codec: Encoder<I>,
+    Codec::Error: From<<W as ErrorType>::Error>,
+{
+    pub fn new(inner: W, codec: Codec) -> Self {
+        Self {
+            inner,
+            codec,
+            write_frame: WriteFrame::with_capacity(512),
+            _i: Default::default(),
+        }
+    }
+}
+
+impl<R, Codec> Stream for FramedRead<R ,Codec>
+where
+    R: Read,
+    Codec: Decoder,
+    Codec::Error: From<<R as ErrorType>::Error>,
 {
     type Item = Result<Codec::Item, Codec::Error>;
 
@@ -176,17 +259,46 @@ where
     }
 }
 
-impl<RW, Codec> ErrorType for Framed<RW, Codec>
+impl<R, W, I, Codec> Stream for Framed<R, W, I, Codec>
 where
-    RW: Read + Write,
+    R: Read,
+    W: Write,
+    Codec: Decoder,
+    Codec::Error: From<<R as ErrorType>::Error>,
+    Codec::Error: From<<W as ErrorType>::Error>,
+{
+    type Item = Result<Codec::Item, Codec::Error>;
+
+    async fn next(&mut self) -> Option<Self::Item> {
+        self.read.next().await
+    }
+}
+
+impl<RW, Codec> ErrorType for FramedRead<RW, Codec>
+where
     Codec: ErrorType,
 {
     type Error = Codec::Error;
 }
 
-impl<RW, Codec, I> Sink<I> for Framed<RW, Codec>
+impl<RW, I, Codec> ErrorType for FramedWrite<RW, I, Codec>
 where
-    RW: Read + Write,
+    Codec: ErrorType,
+{
+    type Error = Codec::Error;
+}
+
+impl<R, W, I, Codec> ErrorType for Framed<R, W, I, Codec>
+where
+    Codec: ErrorType,
+{
+    type Error = Codec::Error;
+}
+
+
+impl<RW, Codec, I> Sink<I> for FramedWrite<RW, I, Codec>
+where
+    RW: Write,
     Codec: Encoder<I>,
     Codec::Error: From<<RW as ErrorType>::Error>,
 {
@@ -220,5 +332,27 @@ where
 
         // can we do sth here?
         Ok(())
+    }
+}
+
+
+impl<R, W, I, Codec> Sink<I> for Framed<R, W, I, Codec>
+where
+    R: Read,
+    W: Write,
+    Codec: Encoder<I>,
+    Codec::Error: From<<R as ErrorType>::Error>,
+    Codec::Error: From<<W as ErrorType>::Error>,
+{
+    async fn send(&mut self, item: I) -> Result<(), Self::Error> {
+        self.write.send(item).await
+    }
+
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        self.write.flush().await
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        self.write.close().await
     }
 }

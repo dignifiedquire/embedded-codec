@@ -14,6 +14,6 @@ pub mod codecs;
 // pub use self::buffer::Buffer;
 pub use self::decoder::Decoder;
 pub use self::encoder::Encoder;
-pub use self::framed::Framed;
+pub use self::framed::{Framed, FramedRead, FramedWrite};
 pub use self::sink::Sink;
 pub use self::stream::Stream;
